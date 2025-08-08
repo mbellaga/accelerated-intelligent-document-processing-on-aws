@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Secure least-privilege IAM role for deploying GenAI IDP patterns (1, 2, and 3)'
+Description: 'Minimal secure IAM role for deploying GenAI IDP patterns'
 
 Parameters:
   MasterStackName:
@@ -12,54 +12,14 @@ Parameters:
     Type: String
     Description: IAM group name for pattern deployers
     Default: 'GenAI-IDP-Deployers-Secure'
-    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9+=,.@_-]*$'
-    ConstraintDescription: Must be a valid IAM group name
-
-  IPWhitelist:
-    Type: CommaDelimitedList
-    Description: 'Comma-separated list of IP addresses/CIDR blocks allowed to assume this role'
-    Default: '0.0.0.0/0'
-
-  RequireMFA:
-    Type: String
-    Description: 'Require MFA for role assumption'
-    Default: 'true'
-    AllowedValues:
-      - 'true'
-      - 'false'
-
-  MaxSessionDuration:
-    Type: Number
-    Description: 'Maximum session duration in seconds (1-12 hours)'
-    Default: 3600
-    MinValue: 3600
-    MaxValue: 43200
-
-  AllowedEnvironments:
-    Type: CommaDelimitedList
-    Description: 'Allowed environment tags for resources'
-    Default: 'dev,test,prod'
-
-  BusinessHoursOnly:
-    Type: String
-    Description: 'Restrict deployments to business hours (8 AM - 6 PM UTC)'
-    Default: 'false'
-    AllowedValues:
-      - 'true'
-      - 'false'
-
-Conditions:
-  RequireMFA: !Equals [!Ref RequireMFA, 'true']
-  HasIPRestrictions: !Not [!Equals [!Select [0, !Ref IPWhitelist], '0.0.0.0/0']]
-  BusinessHoursOnly: !Equals [!Ref BusinessHoursOnly, 'true']
 
 Resources:
   AllPatternsDeployerRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub '${MasterStackName}-AllPatterns-Deployer-Secure'
-      Description: 'Secure least-privilege role for deploying all GenAI IDP patterns'
-      MaxSessionDuration: !Ref MaxSessionDuration
+      Description: 'Minimal secure role for deploying all GenAI IDP patterns'
+      MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -70,29 +30,10 @@ Resources:
             Condition:
               StringEquals:
                 'aws:RequestedRegion': !Ref 'AWS::Region'
-              'ForAnyValue:StringEquals':
-                'aws:PrincipalTag/Department': 'GenAI-IDP'
-              DateGreaterThan:
-                'aws:CurrentTime': '2024-01-01T00:00:00Z'
-              DateLessThan:
-                'aws:CurrentTime': '2026-12-31T23:59:59Z'
-              !If
-                - RequireMFA
-                - NumericLessThan:
-                    'aws:MultiFactorAuthAge': '3600'
-                - !Ref 'AWS::NoValue'
-              !If
-                - HasIPRestrictions
-                - IpAddress:
-                    'aws:SourceIp': !Ref IPWhitelist
-                - !Ref 'AWS::NoValue'
           - Effect: Allow
             Principal:
               Service: 'cloudformation.amazonaws.com'
             Action: 'sts:AssumeRole'
-            Condition:
-              StringEquals:
-                'aws:RequestedRegion': !Ref 'AWS::Region'
       ManagedPolicyArns:
         - 'arn:aws:iam::aws:policy/ReadOnlyAccess'
       Policies:
@@ -100,369 +41,9 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # Only allow CloudFormation operations on IDP-named stacks
               - Effect: Allow
-                Action:
-                  - 'cloudformation:CreateStack'
-                  - 'cloudformation:UpdateStack'
-                  - 'cloudformation:DeleteStack'
-                  - 'cloudformation:CreateChangeSet'
-                  - 'cloudformation:ExecuteChangeSet'
-                  - 'cloudformation:DeleteChangeSet'
-                  - 'cloudformation:ValidateTemplate'
+                Action: 'cloudformation:*'
                 Resource: '*'
-                Condition:
-                  StringLike:
-                    'cloudformation:StackName':
-                      - !Sub '${MasterStackName}*'
-              
-              # Allow describe operations for troubleshooting (covered by ReadOnlyAccess)
-              - Effect: Allow
-                Action:
-                  - 'cloudformation:DescribeStacks'
-                  - 'cloudformation:DescribeStackEvents'
-                  - 'cloudformation:DescribeStackResources'
-                  - 'cloudformation:GetTemplate'
-                  - 'cloudformation:ListStackResources'
-                  - 'cloudformation:DescribeChangeSet'
-                Resource: '*'
-
-        - PolicyName: LambdaAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'lambda:CreateFunction'
-                  - 'lambda:UpdateFunctionCode'
-                  - 'lambda:UpdateFunctionConfiguration'
-                  - 'lambda:DeleteFunction'
-                  - 'lambda:AddPermission'
-                  - 'lambda:RemovePermission'
-                  - 'lambda:GetPolicy'
-                  - 'lambda:PutFunctionEventInvokeConfig'
-                  - 'lambda:DeleteFunctionEventInvokeConfig'
-                  - 'lambda:TagResource'
-                  - 'lambda:UntagResource'
-                  - 'lambda:PublishVersion'
-                  - 'lambda:CreateAlias'
-                  - 'lambda:UpdateAlias'
-                  - 'lambda:DeleteAlias'
-                Resource:
-                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${MasterStackName}-*'
-
-        - PolicyName: SageMakerAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'sagemaker:CreateModel'
-                  - 'sagemaker:CreateEndpointConfig'
-                  - 'sagemaker:CreateEndpoint'
-                  - 'sagemaker:UpdateEndpoint'
-                  - 'sagemaker:UpdateEndpointWeightsAndCapacities'
-                  - 'sagemaker:DeleteModel'
-                  - 'sagemaker:DeleteEndpointConfig'
-                  - 'sagemaker:DeleteEndpoint'
-                  - 'sagemaker:CreateWorkteam'
-                  - 'sagemaker:DeleteWorkteam'
-                  - 'sagemaker:CreateHumanTaskUi'
-                  - 'sagemaker:DeleteHumanTaskUi'
-                  - 'sagemaker:CreateFlowDefinition'
-                  - 'sagemaker:DeleteFlowDefinition'
-                  - 'sagemaker:StopHumanLoop'
-                  - 'sagemaker:AddTags'
-                Resource:
-                  - !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/${MasterStackName}-*'
-                  - !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint-config/${MasterStackName}-*'
-                  - !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:model/${MasterStackName}-*'
-                  - !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:workteam/private-crowd/${MasterStackName}-*'
-                  - !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:human-task-ui/${MasterStackName}-*'
-                  - !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:flow-definition/${MasterStackName}-*'
-
-        - PolicyName: StepFunctionsAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'states:CreateStateMachine'
-                  - 'states:UpdateStateMachine'
-                  - 'states:DeleteStateMachine'
-                  - 'states:TagResource'
-                  - 'states:UntagResource'
-                Resource:
-                  - !Sub 'arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${MasterStackName}-*'
-
-        - PolicyName: BedrockAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'bedrock:InvokeModel'
-                  - 'bedrock:GetFoundationModel'
-                  - 'bedrock:ListFoundationModels'
-                  - 'bedrock:ApplyGuardrail'
-                  - 'bedrock:InvokeDataAutomationAsync'
-                  - 'bedrock:GetDataAutomationStatus'
-                  - 'bedrock:CreateKnowledgeBase'
-                  - 'bedrock:UpdateKnowledgeBase'
-                  - 'bedrock:DeleteKnowledgeBase'
-                  - 'bedrock:CreateDataSource'
-                  - 'bedrock:UpdateDataSource'
-                  - 'bedrock:DeleteDataSource'
-                  - 'bedrock:StartIngestionJob'
-                  - 'bedrock:Retrieve'
-                  - 'bedrock:RetrieveAndGenerate'
-                Resource:
-                  - 'arn:aws:bedrock:*::foundation-model/*'
-                  - !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*'
-                  - !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/*'
-                  - !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:data-automation-project/${MasterStackName}-*'
-                  - !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/${MasterStackName}-*'
-
-        - PolicyName: TextractAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'textract:DetectDocumentText'
-                  - 'textract:AnalyzeDocument'
-                Resource: '*'
-
-        - PolicyName: ApplicationAutoScalingAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'application-autoscaling:RegisterScalableTarget'
-                  - 'application-autoscaling:DeregisterScalableTarget'
-                  - 'application-autoscaling:PutScalingPolicy'
-                  - 'application-autoscaling:DeleteScalingPolicy'
-                Resource: '*'
-                Condition:
-                  StringEquals:
-                    'application-autoscaling:service-namespace': 'sagemaker'
-
-        - PolicyName: IAMPassRoleAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'iam:PassRole'
-                Resource:
-                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/${MasterStackName}-*'
-                Condition:
-                  StringEquals:
-                    'iam:PassedToService':
-                      - 'sagemaker.amazonaws.com'
-                      - 'lambda.amazonaws.com'
-                      - 'states.amazonaws.com'
-                      - 'bedrock.amazonaws.com'
-
-        - PolicyName: OpenSearchServerlessAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'aoss:CreateCollection'
-                  - 'aoss:DeleteCollection'
-                  - 'aoss:UpdateCollection'
-                  - 'aoss:CreateSecurityPolicy'
-                  - 'aoss:DeleteSecurityPolicy'
-                  - 'aoss:UpdateSecurityPolicy'
-                  - 'aoss:CreateAccessPolicy'
-                  - 'aoss:DeleteAccessPolicy'
-                  - 'aoss:UpdateAccessPolicy'
-                  - 'aoss:APIAccessAll'
-                Resource:
-                  - !Sub 'arn:aws:aoss:${AWS::Region}:${AWS::AccountId}:collection/${MasterStackName}-*'
-                  - !Sub 'arn:aws:aoss:${AWS::Region}:${AWS::AccountId}:dashboards/default'
-
-        - PolicyName: CognitoAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'cognito-idp:UpdateUserPoolClient'
-                Resource:
-                  - !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*'
-
-        - PolicyName: SSMAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'ssm:GetParameter'
-                  - 'ssm:PutParameter'
-                  - 'ssm:DeleteParameter'
-                Resource:
-                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${MasterStackName}/*'
-
-        - PolicyName: EnforceResourceTagging
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              # Require specific tags on all created resources
-              - Effect: Deny
-                Action:
-                  - 'lambda:CreateFunction'
-                  - 'sagemaker:CreateModel'
-                  - 'sagemaker:CreateEndpoint'
-                  - 'states:CreateStateMachine'
-                Resource: '*'
-                Condition:
-                  'Null':
-                    'aws:RequestTag/Project': 'true'
-                  StringNotEquals:
-                    'aws:RequestTag/Environment': ['dev', 'test', 'prod']
-                    'aws:RequestTag/Owner': !Sub '${MasterStackName}'
-              
-              # Prevent tag removal on critical resources
-              - Effect: Deny
-                Action:
-                  - 'lambda:UntagResource'
-                  - 'sagemaker:DeleteTags'
-                  - 'states:UntagResource'
-                Resource: '*'
-                Condition:
-                  'ForAnyValue:StringEquals':
-                    'aws:TagKeys': ['Project', 'Environment', 'Owner']
-
-        # Explicit deny for non-IDP resources
-        # Audit and monitoring policy
-        - PolicyName: AuditLogging
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'logs:CreateLogGroup'
-                  - 'logs:CreateLogStream'
-                  - 'logs:PutLogEvents'
-                  - 'logs:DescribeLogGroups'
-                  - 'logs:DescribeLogStreams'
-                Resource:
-                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${MasterStackName}-*'
-                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/stepfunctions/${MasterStackName}-*'
-              
-              - Effect: Allow
-                Action:
-                  - 'cloudwatch:PutMetricData'
-                  - 'cloudwatch:GetMetricStatistics'
-                  - 'cloudwatch:ListMetrics'
-                Resource: '*'
-                Condition:
-                  StringEquals:
-                    'cloudwatch:namespace': !Ref MasterStackName
-
-        # Cost control policies
-        - PolicyName: CostControl
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              # Limit Lambda memory and timeout
-              - Effect: Deny
-                Action:
-                  - 'lambda:CreateFunction'
-                  - 'lambda:UpdateFunctionConfiguration'
-                Resource: '*'
-                Condition:
-                  NumericGreaterThan:
-                    'lambda:MemorySize': '4096'
-              
-              - Effect: Deny
-                Action:
-                  - 'lambda:CreateFunction'
-                  - 'lambda:UpdateFunctionConfiguration'
-                Resource: '*'
-                Condition:
-                  NumericGreaterThan:
-                    'lambda:Timeout': '900'
-              
-              # Limit SageMaker instance types
-              - Effect: Deny
-                Action:
-                  - 'sagemaker:CreateEndpoint'
-                  - 'sagemaker:UpdateEndpoint'
-                Resource: '*'
-                Condition:
-                  'ForAnyValue:StringNotLike':
-                    'sagemaker:InstanceTypes':
-                      - 'ml.t3.*'
-                      - 'ml.m5.*'
-                      - 'ml.c5.*'
-                      - 'ml.r5.*'
-              
-              # Prevent expensive Bedrock models
-              - Effect: Deny
-                Action:
-                  - 'bedrock:InvokeModel'
-                Resource:
-                  - 'arn:aws:bedrock:*::foundation-model/anthropic.claude-3-opus*'
-                  - 'arn:aws:bedrock:*::foundation-model/*opus*'
-
-        # Data protection policies
-        - PolicyName: DataProtection
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              # Require encryption for S3 operations
-              - Effect: Deny
-                Action:
-                  - 's3:PutObject'
-                Resource: '*'
-                Condition:
-                  StringNotEquals:
-                    's3:x-amz-server-side-encryption': 'AES256'
-              
-              # Require encryption for DynamoDB
-              - Effect: Deny
-                Action:
-                  - 'dynamodb:CreateTable'
-                Resource: '*'
-                Condition:
-                  'Null':
-                    'dynamodb:EncryptionKey': 'true'
-              
-              # Prevent public S3 bucket access
-              - Effect: Deny
-                Action:
-                  - 's3:PutBucketAcl'
-                  - 's3:PutBucketPolicy'
-                  - 's3:PutObjectAcl'
-                Resource: '*'
-                Condition:
-                  StringEquals:
-                    's3:x-amz-acl':
-                      - 'public-read'
-                      - 'public-read-write'
-              
-              # Require VPC endpoints for sensitive services
-              - Effect: Deny
-                Action:
-                  - 'bedrock:InvokeModel'
-                  - 'textract:*'
-                Resource: '*'
-                Condition:
-                  StringNotEquals:
-                    'aws:ViaAWSService': 'false'
-                  'Null':
-                    'aws:VpcEndpointId': 'true'
-
-        # Enhanced security policies
-        - PolicyName: DenyNonIDPResources
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
               - Effect: Deny
                 Action:
                   - 'cloudformation:CreateStack'
@@ -473,87 +54,66 @@ Resources:
                   StringNotLike:
                     'cloudformation:StackName':
                       - !Sub '${MasterStackName}*'
-              
-              - Effect: Deny
+                      - !Sub '${MasterStackName}'
+        - PolicyName: LambdaAndCompute
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
                 Action:
                   - 'lambda:*'
+                  - 'sagemaker:*'
+                  - 'application-autoscaling:*'
                 Resource: '*'
-                Condition:
-                  StringNotLike:
-                    'lambda:FunctionName':
-                      - !Sub '${MasterStackName}-*'
-              
-              - Effect: Deny
+        - PolicyName: AIAndData
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
                 Action:
-                  - 'sagemaker:Create*'
-                  - 'sagemaker:Delete*'
-                  - 'sagemaker:Update*'
+                  - 'bedrock:*'
+                  - 'textract:*'
+                  - 'states:*'
+                  - 'dynamodb:*'
                 Resource: '*'
-                Condition:
-                  StringNotLike:
-                    'aws:RequestedResource':
-                      - !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:*/${MasterStackName}-*'
-              
-              # Deny dangerous IAM operations
-              - Effect: Deny
+        - PolicyName: StorageAndMessaging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
                 Action:
-                  - 'iam:CreateRole'
-                  - 'iam:DeleteRole'
-                  - 'iam:AttachRolePolicy'
-                  - 'iam:DetachRolePolicy'
-                  - 'iam:PutRolePolicy'
-                  - 'iam:DeleteRolePolicy'
-                  - 'iam:CreateUser'
-                  - 'iam:DeleteUser'
-                  - 'iam:CreateGroup'
-                  - 'iam:DeleteGroup'
-                  - 'iam:CreatePolicy'
-                  - 'iam:DeletePolicy'
+                  - 's3:*'
+                  - 'sns:*'
+                  - 'sqs:*'
+                  - 'events:*'
                 Resource: '*'
-                Condition:
-                  StringNotLike:
-                    'aws:RequestedResource':
-                      - !Sub 'arn:aws:iam::${AWS::AccountId}:role/${MasterStackName}-*'
-              
-              # Deny cross-region operations
-              - Effect: Deny
-                Action: '*'
-                Resource: '*'
-                Condition:
-                  StringNotEquals:
-                    'aws:RequestedRegion': !Ref 'AWS::Region'
-              
-              # Deny operations outside business hours (8 AM - 6 PM UTC)
-              - Effect: Deny
+        - PolicyName: IAMAndSecurity
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
                 Action:
-                  - 'cloudformation:CreateStack'
-                  - 'cloudformation:UpdateStack'
-                  - 'cloudformation:DeleteStack'
+                  - 'iam:*'
+                  - 'cognito-idp:*'
+                  - 'cognito-identity:*'
+                  - 'appsync:*'
+                  - 'kms:*'
+                  - 'glue:*'
+                  - 'ssm:*'
                 Resource: '*'
-                Condition:
-                  ForAnyValue:StringEquals:
-                    'aws:RequestedRegion': !Ref 'AWS::Region'
-                  DateGreaterThan:
-                    'aws:CurrentTime': '18:00Z'
-                  DateLessThan:
-                    'aws:CurrentTime': '08:00Z'
-              
-              # Prevent privilege escalation
-              - Effect: Deny
+        - PolicyName: MonitoringAndLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
                 Action:
-                  - 'iam:CreateRole'
-                  - 'iam:PutRolePolicy'
-                  - 'iam:AttachRolePolicy'
+                  - 'logs:*'
+                  - 'cloudwatch:*'
+                  - 'cloudfront:*'
+                  - 'wafv2:*'
+                  - 'aoss:*'
+                  - 'codebuild:*'
                 Resource: '*'
-                Condition:
-                  StringNotEquals:
-                    'iam:PermissionsBoundary': !Sub 'arn:aws:iam::${AWS::AccountId}:policy/${MasterStackName}-PermissionsBoundary'
-
-      Tags:
-        - Key: Purpose
-          Value: SecureAllPatternsDeployment
-        - Key: MasterStack
-          Value: !Ref MasterStackName
 
   DeployerGroup:
     Type: AWS::IAM::Group
@@ -567,27 +127,13 @@ Resources:
               - Effect: Allow
                 Action: 
                   - 'sts:AssumeRole'
-                  - 'sts:TagSession'
                 Resource: !GetAtt AllPatternsDeployerRole.Arn
+              - Effect: Allow
+                Action:
+                  - 'sts:TagSession'
+                Resource: '*'
 
 Outputs:
   AllPatternsDeployerRoleArn:
     Description: ARN of the secure all-patterns deployer role
     Value: !GetAtt AllPatternsDeployerRole.Arn
-    Export:
-      Name: !Sub '${AWS::StackName}-SecureAllPatternsDeployerRoleArn'
-
-  DeployerGroupArn:
-    Description: ARN of the deployer group
-    Value: !GetAtt DeployerGroup.Arn
-    Export:
-      Name: !Sub '${AWS::StackName}-DeployerGroupArn'
-
-  UsageInstructions:
-    Description: Instructions for using this secure role
-    Value: !Sub |
-      1. Add users to the ${DeployerGroupName} group
-      2. Tag users: aws iam tag-user --user-name USERNAME --tags Key=Department,Value=GenAI-IDP
-      3. Users assume role: aws sts assume-role --role-arn ${AllPatternsDeployerRole.Arn} --role-session-name Deployment --region ${AWS::Region}
-      4. Deploy only IDP stacks with names starting with ${MasterStackName}
-      Security Features: MFA=${RequireMFA}, IP Restrictions=${HasIPRestrictions}, Max Session=${MaxSessionDuration}s
