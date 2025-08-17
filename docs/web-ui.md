@@ -22,7 +22,42 @@ The solution includes a responsive web-based user interface built with React tha
 - **Confidence threshold configuration** for HITL (Human-in-the-Loop) triggering through the Assessment & HITL Configuration section
 - Document upload from local computer
 - Knowledge base querying for document collections
+- "Chat with document" from the detailed view of the document
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
+- **Document Analytics** for querying and visualizing processed document data
+
+## Document Analytics
+
+The Document Analytics feature allows users to query their processed documents using natural language and receive results in various formats including charts, tables, and text responses.
+
+### Key Capabilities
+
+- **Natural Language Queries**: Ask questions about your processed documents in plain English
+- **Multiple Response Types**: Results can be displayed as:
+  - Interactive charts and graphs (using Chart.js)
+  - Structured data tables with pagination and sorting
+  - Text-based responses and summaries
+- **Real-time Processing**: Query processing status updates with visual indicators
+- **Query History**: Track and review previous analytics queries
+
+### Technical Implementation Notes
+
+The analytics feature uses a combination of real-time subscriptions and polling for status updates:
+
+- **Primary Method**: GraphQL subscriptions via AWS AppSync for immediate notifications when queries complete
+- **Fallback Method**: Polling every 5 seconds to ensure status updates are received even if subscriptions fail
+- **Current Limitation**: The AppSync subscription currently returns a Boolean completion status rather than full job details, requiring a separate query to fetch results when notified
+
+**TODO**: Implement proper AppSync subscriptions that return complete AnalyticsJob objects to eliminate the need for additional queries and improve real-time user experience.
+
+### How to Use
+
+1. Navigate to the "Document Analytics" section in the web UI
+2. Enter your question in natural language (e.g., "How many documents were processed last week?")
+3. Click "Submit Query" to start processing
+4. Monitor the status indicator as your query is processed
+5. View results in the appropriate format (chart, table, or text)
+6. Use the debug information toggle to inspect raw response data if needed
 
 ## Document Process Flow Visualization
 
@@ -62,6 +97,17 @@ The Document Process Flow visualization is particularly useful for troubleshooti
 - Understand the sequence of processing steps
 - Analyze execution times to identify performance bottlenecks
 - Inspect the input and output of each step to verify data transformation
+
+## Chat with Document
+
+The "Chat with Document" feature is available at the bottom of the Document Detail view. This feature uses the same model that's configured to do the summarization to provide a RAG interface to the document that's the details are displayed for. No other document is taken in to account except the document you're viewing the details of. Note that this feature will only work after the document status is marked as complete.
+
+Your chat history will be saved as you continue your chat but if you leave the document details screen, your chat history is erased. This feature uses prompt caching for the document contents for repeated chat requests for each document.
+
+### How to Use
+
+1. Navigate to a document's detail page and scroll to the bottom
+2. In the text area, type in your question and you'll see an answer pop up after the document is analyzed with the Nova Pro model
 
 ## Authentication Features
 
