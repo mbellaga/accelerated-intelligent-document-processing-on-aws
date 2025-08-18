@@ -16,12 +16,16 @@ import {
   FormField,
   Input,
   RadioGroup,
+  Badge,
 } from '@awsui/components-react';
 import Editor from '@monaco-editor/react';
 // eslint-disable-next-line import/no-extraneous-dependencies
 import yaml from 'js-yaml';
 import useConfiguration from '../../hooks/use-configuration';
+import useSettingsVersions from '../../hooks/use-settings-versions';
 import FormView from './FormView';
+import VersionSelector from './VersionSelector';
+import VersionManagementPanel from './VersionManagementPanel';
 
 const ConfigurationLayout = () => {
   const {
@@ -35,6 +39,10 @@ const ConfigurationLayout = () => {
     isCustomized,
     resetToDefault,
   } = useConfiguration();
+
+  // Version management
+  const versionsHook = useSettingsVersions();
+  const [showVersionPanel, setShowVersionPanel] = useState(false);
 
   const [formValues, setFormValues] = useState({});
   const [jsonContent, setJsonContent] = useState('');
@@ -1031,8 +1039,12 @@ const ConfigurationLayout = () => {
         header={
           <Header
             variant="h2"
+            description="Configure IDP system settings and manage versions"
             actions={
               <SpaceBetween direction="horizontal" size="xs">
+                <Button iconName="settings" onClick={() => setShowVersionPanel(!showVersionPanel)}>
+                  {showVersionPanel ? 'Hide' : 'Manage'} Versions
+                </Button>
                 <SegmentedControl
                   selectedId={viewMode}
                   onChange={({ detail }) => setViewMode(detail.selectedId)}
@@ -1078,84 +1090,96 @@ const ConfigurationLayout = () => {
             }
           >
             Configuration
+            {versionsHook.activeVersion && (
+              <Box margin={{ top: 'xs' }}>
+                <Badge color="blue">Active: {versionsHook.activeVersion.name}</Badge>
+              </Box>
+            )}
           </Header>
         }
       >
         <Form>
-          {saveSuccess && (
-            <Alert
-              type="success"
-              dismissible
-              onDismiss={() => setSaveSuccess(false)}
-              header="Configuration saved successfully"
-            >
-              Your configuration changes have been saved.
-            </Alert>
-          )}
+          <SpaceBetween size="l">
+            {/* Version Selector */}
+            <VersionSelector
+              versions={versionsHook.versions}
+              activeVersion={versionsHook.activeVersion}
+              onVersionChange={(version) => {
+                versionsHook.setActiveVersion(version.id);
+                // Update form with version config
+                if (version.config) {
+                  setFormValues(version.config);
+                  setJsonContent(JSON.stringify(version.config, null, 2));
+                  setYamlContent(yaml.dump(version.config));
+                }
+              }}
+            />
 
-          {saveError && (
-            <Alert type="error" dismissible onDismiss={() => setSaveError(null)} header="Error saving configuration">
-              {saveError}
-            </Alert>
-          )}
-
-          {importError && (
-            <Alert type="error" dismissible onDismiss={() => setImportError(null)} header="Import error">
-              {importError}
-            </Alert>
-          )}
-
-          {validationErrors.length > 0 && (
-            <Alert type="warning" header="Validation errors">
-              <ul>
-                {validationErrors.map((e, index) => (
-                  // eslint-disable-next-line react/no-array-index-key
-                  <li key={index}>{e.message}</li>
-                ))}
-              </ul>
-            </Alert>
-          )}
-
-          <Box padding="s">
-            {viewMode === 'form' && (
-              <FormView
-                schema={schema}
-                formValues={formValues}
-                defaultConfig={defaultConfig}
-                isCustomized={isCustomized}
-                onResetToDefault={resetToDefault}
-                onChange={handleFormChange}
+            {/* Version Management Panel (Collapsible) */}
+            {showVersionPanel && (
+              <VersionManagementPanel
+                versions={versionsHook.versions}
+                activeVersion={versionsHook.activeVersion}
+                createVersion={versionsHook.createVersion}
+                updateVersion={versionsHook.updateVersion}
+                deleteVersion={versionsHook.deleteVersion}
+                duplicateVersion={versionsHook.duplicateVersion}
+                setActiveVersion={versionsHook.setActiveVersion}
               />
             )}
 
-            {viewMode === 'json' && (
-              <Editor
-                height="70vh"
-                defaultLanguage="json"
-                value={jsonContent}
-                onChange={handleJsonEditorChange}
-                onMount={handleEditorDidMount}
-                options={{
-                  minimap: { enabled: false },
-                  formatOnPaste: true,
-                  formatOnType: true,
-                  automaticLayout: true,
-                  scrollBeyondLastLine: false,
-                  folding: true,
-                  lineNumbers: 'on',
-                  renderLineHighlight: 'all',
-                  tabSize: 2,
-                }}
-              />
+            {saveSuccess && (
+              <Alert
+                type="success"
+                dismissible
+                onDismiss={() => setSaveSuccess(false)}
+                header="Configuration saved successfully"
+              >
+                Your configuration changes have been saved.
+              </Alert>
             )}
 
-            {viewMode === 'yaml' && (
-              <Box>
+            {saveError && (
+              <Alert type="error" dismissible onDismiss={() => setSaveError(null)} header="Error saving configuration">
+                {saveError}
+              </Alert>
+            )}
+
+            {importError && (
+              <Alert type="error" dismissible onDismiss={() => setImportError(null)} header="Import error">
+                {importError}
+              </Alert>
+            )}
+
+            {validationErrors.length > 0 && (
+              <Alert type="warning" header="Validation errors">
+                <ul>
+                  {validationErrors.map((e, index) => (
+                    // eslint-disable-next-line react/no-array-index-key
+                    <li key={index}>{e.message}</li>
+                  ))}
+                </ul>
+              </Alert>
+            )}
+
+            <Box padding="s">
+              {viewMode === 'form' && (
+                <FormView
+                  schema={schema}
+                  formValues={formValues}
+                  defaultConfig={defaultConfig}
+                  isCustomized={isCustomized}
+                  onResetToDefault={resetToDefault}
+                  onChange={handleFormChange}
+                />
+              )}
+
+              {viewMode === 'json' && (
                 <Editor
                   height="70vh"
-                  defaultLanguage="yaml"
-                  value={yamlContent}
-                  onChange={handleYamlEditorChange}
+                  defaultLanguage="json"
+                  value={jsonContent}
+                  onChange={handleJsonEditorChange}
                   onMount={handleEditorDidMount}
                   options={{
                     minimap: { enabled: false },
@@ -1169,9 +1193,32 @@ const ConfigurationLayout = () => {
                     tabSize: 2,
                   }}
                 />
-              </Box>
-            )}
-          </Box>
+              )}
+
+              {viewMode === 'yaml' && (
+                <Box>
+                  <Editor
+                    height="70vh"
+                    defaultLanguage="yaml"
+                    value={yamlContent}
+                    onChange={handleYamlEditorChange}
+                    onMount={handleEditorDidMount}
+                    options={{
+                      minimap: { enabled: false },
+                      formatOnPaste: true,
+                      formatOnType: true,
+                      automaticLayout: true,
+                      scrollBeyondLastLine: false,
+                      folding: true,
+                      lineNumbers: 'on',
+                      renderLineHighlight: 'all',
+                      tabSize: 2,
+                    }}
+                  />
+                </Box>
+              )}
+            </Box>
+          </SpaceBetween>
         </Form>
       </Container>
     </>
