@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT-0
 
 This pattern implements an intelligent document processing workflow that uses UDOP (Unified Document Processing) for page classification and grouping, followed by Claude for information extraction.
 
-<img src="../../images/IDP-Pattern3-UDOP.drawio.png" alt="Architecture" width="800">
+<img src="../images/IDP-Pattern3-UDOP.drawio.png" alt="Architecture" width="800">
 
 
 ## Table of Contents
@@ -30,7 +30,7 @@ This pattern implements an intelligent document processing workflow that uses UD
 
 ## Fine tuning a UDOP model for classification
 
-See [Fine-Tuning Models on SageMaker](./fine-tune-sm-udop-classification/README.md) 
+See [Fine-Tuning Models on SageMaker](../patterns/pattern-3/fine-tune-sm-udop-classification/README.md) 
 
 Once you have trained the model, deploy the GenAIIDP stack for Pattern-3 using the path for your new fine tuned model.
 
@@ -209,7 +209,7 @@ The pattern exports these outputs to the parent stack:
 
 **Stack Deployment Parameters:**
 - `UDOPModelArtifactPath`: S3 path to UDOP model artifacts (see [Fine tuning a UDOP model](#fine-tuning-a-udop-model-for-classification))
-- `IsSummarizationEnabled`: Boolean to enable/disable summarization functionality (true|false)
+- **Summarization**: Control summarization via configuration file `summarization.enabled` property (replaces `IsSummarizationEnabled` parameter)
 - `ConfigurationDefaultS3Uri`: Optional S3 URI to custom configuration (uses default configuration if not specified)
 - `MaxConcurrentWorkflows`: Workflow concurrency limit
 - `LogRetentionDays`: CloudWatch log retention period

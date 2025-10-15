@@ -1,3 +1,5 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
 import json
 import boto3
 import logging
@@ -7,13 +9,78 @@ import mimetypes
 import base64
 import hashlib
 import os
+import re 
 from urllib.parse import urlparse
 from botocore.exceptions import ClientError
+from idp_common.bedrock.client import BedrockClient
 
 # Set up logging
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+
+def remove_text_between_brackets(text):
+    # Find position of first opening bracket
+    start = text.find('{')
+    # Find position of last closing bracket
+    end = text.rfind('}')
+    
+    # If both brackets exist, remove text between them including brackets
+    if start != -1 and end != -1:
+        return text[:start] + text[end+1:]
+    # If brackets not found, return original string
+    return text
+
 # Get LOG_LEVEL from environment variable with INFO as default
+def s3_object_exists(bucket, key):
+    try:
+        s3 = boto3.client('s3')
+        s3.head_object(Bucket=bucket, Key=key)
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] == '404':
+            return False
+        else:
+            raise
+
+def get_full_text(bucket, key):
+    try:
+        dynamodb = boto3.resource('dynamodb')
+        tracking_table = dynamodb.Table(os.environ['TRACKING_TABLE_NAME'])
+        
+        doc_pk = f"doc#{key}"
+        response = tracking_table.get_item(
+            Key={'PK': doc_pk, 'SK': 'none'}
+        )
+        
+        if 'Item' not in response:
+            logger.info(f"Document {key} not found")
+            raise Exception(f"Document {key} not found")
+            
+        document = response['Item']
+        pages = document.get('Pages', {})
+        sorted_pages = sorted(pages, key=lambda x: x['Id'])
+
+        s3 = boto3.client('s3')
+        all_text = ""
+        
+        for page in sorted_pages:
+            if 'TextUri' in page:
+                # Extract S3 key from URI
+                text_key = page['TextUri'].replace(f"s3://{bucket}/", "")
+                
+                try:
+                    response = s3.get_object(Bucket=bucket, Key=text_key)
+                    page_text = response['Body'].read().decode('utf-8')
+                    all_text += f"<page-number>{page['Id']}</page-number>\n{page_text}\n\n"
+                except Exception as e:
+                    logger.warning(f"Failed to load page {page['Id']}: {e}")
+                    
+        return all_text
+        
+    except Exception as e:
+        logger.error(f"Error getting document pages: {str(e)}")
+        raise Exception(f"Error getting document pages: {str(e)}")
+
 
 def get_summarization_model():
     """Get the summarization model from configuration table"""
@@ -44,18 +111,11 @@ def handler(event, context):
 
     try:
         # logger.info(f"Received event: {json.dumps(event)}")
-
         objectKey = event['arguments']['s3Uri']
         prompt = event['arguments']['prompt']
         history = event['arguments']['history']
 
-        full_prompt = "You are an assistant that's responsible for getting details from document text attached here based on questions from the user.\n\n"
-        full_prompt += "If you don't know the answer, just say that you don't know. Don't try to make up an answer.\n\n"
-        full_prompt += "Additionally, use the user and assistant responses in the following JSON object to see what's been asked and what the resposes were in the past.\n\n"
-        # full_prompt += "Your response MUST be in the following JSON format: {'content': [{'text': 'String'}]}.\n\n"
-        # full_prompt += "You MUST NOT include outside of that JSON format.\n\n"
-        # full_prompt += "Do NOT include the role or anything else in the response."
-        full_prompt += "The history JSON object is: " + json.dumps(history) + ".\n\n"
+        full_prompt = "The history JSON object is: " + json.dumps(history) + ".\n\n"
         full_prompt += "The user's question is: " + prompt + "\n\n"
 
         # this feature is not enabled until the model can be selected on the chat screen
@@ -63,92 +123,84 @@ def handler(event, context):
         selectedModelId = get_summarization_model()
 
         logger.info(f"Processing S3 URI: {objectKey}")
+        logger.info(f"Region: {os.environ['AWS_REGION']}")
 
         output_bucket = os.environ['OUTPUT_BUCKET']
 
-        bedrock_runtime = boto3.client('bedrock-runtime', region_name='us-west-2')
-
-        # Call Bedrock Runtime to get Python code based on the prompt
         if (len(objectKey)):
-            # encoded_string = objectKey.encode()
-            # md5_hash = hashlib.md5(encoded_string)
-            # hex_representation = md5_hash.hexdigest()
-
-            # full text key
             fulltext_key = objectKey + '/summary/fulltext.txt'
+            content_str = ""
+            s3 = boto3.client('s3')
+
+            if not s3_object_exists(output_bucket, fulltext_key):
+                logger.info(f"Creating full text file: {fulltext_key}")
+                content_str = get_full_text(output_bucket, objectKey)
+
+                s3.put_object(
+                    Bucket=output_bucket,
+                    Key=fulltext_key,
+                    Body=content_str.encode('utf-8')
+                )
+            else:
+                # read full contents of the object as text
+                response = s3.get_object(Bucket=output_bucket, Key=fulltext_key)
+                content_str = response['Body'].read().decode('utf-8')
 
             logger.info(f"Model: {selectedModelId}")
             logger.info(f"Output Bucket: {output_bucket}")
             logger.info(f"Full Text Key: {fulltext_key}")
 
-            # read full contents of the object as text
-            s3 = boto3.client('s3')
-            response = s3.get_object(Bucket=output_bucket, Key=fulltext_key)
-            content_str = response['Body'].read().decode('utf-8')
-
-            message = [
+            # Content with cachepoint tags
+            content = [
                 {
-                    "role":"user",
-                    "content": [
-                        {
-                            "text": content_str
-                        },
-                        {
-                           "cachePoint" : {
-                                'type': 'default'
-                            }
-                        }
-                    ]
-                },
-                {
-                    "role":"user",
-                    "content": [
-                        {
-                            "text": full_prompt
-                        }
-                    ]
+                    "text": content_str + """
+                    <<CACHEPOINT>>
+                    """ + full_prompt
                 }
             ]
 
-            # print('invoking model converse')
-
-            selectedModelId = 'us.amazon.nova-pro-v1:0'
-            response = bedrock_runtime.converse(
-                modelId=selectedModelId,
-                messages=message
+            client = BedrockClient(
+                region=os.environ['AWS_REGION'],
+                max_retries=5,
+                initial_backoff=1.5,
+                max_backoff=300,
+                metrics_enabled=True
             )
 
-            token_usage = response['usage']
-            # print(f"Input tokens:  {token_usage['inputTokens']}")
-            # print(f"Output tokens:  {token_usage['outputTokens']}")
-            # print(f"Total tokens:  {token_usage['totalTokens']}")
-            # print(f"cacheReadInputTokens:  {token_usage['cacheReadInputTokens']}")
-            # print(f"cacheWriteInputTokens:  {token_usage['cacheWriteInputTokens']}")
-            # print(f"Stop reason: {response['stopReason']}")
+            # Invoke a model
+            response = client.invoke_model(
+                model_id=selectedModelId,
+                system_prompt="You are an assistant that's responsible for getting details from document text attached here based on questions from the user.\n\nIf you don't know the answer, just say that you don't know. Don't try to make up an answer.\n\nAdditionally, use the user and assistant responses in the following JSON object to see what's been asked and what the resposes were in the past.\n\n",
+                content=content,
+                temperature=0.0
+            )
 
+            text = client.extract_text_from_response(response)
+            logger.info(f"Full response: {text}")
 
-            output_message = response['output']['message']
-            text_content = output_message['content'][0]['text']
-
-            chat_response = {"cr": {"content": [{"text": text_content}]}}
+            # right now, there is a JSON object before the full response when a guardrail is tripped
+            # need to remove that JSON object first
+            logger.info(f"New response: {remove_text_between_brackets(text).strip("\n")}")
+            cleaned_up_text = remove_text_between_brackets(text).strip("\n")
+            
+            chat_response = {"cr": {"content": [{"text": cleaned_up_text}]}}
+            
             return json.dumps(chat_response)
-
-
 
     except ClientError as e:
         error_code = e.response['Error']['Code']
         error_message = e.response['Error']['Message']
-        logger.error(f"S3 ClientError: {error_code} - {error_message}")
+        logger.error(f"Error: {error_code} - {error_message}")
         
         if error_code == 'NoSuchKey':
-            raise Exception(f"File not found: {fulltext_key}. The chat feature will not work with files that were processed prior to v0.3.11.")
+            raise Exception(f"File not found: {fulltext_key}")
         elif error_code == 'NoSuchBucket':
             raise Exception(f"Bucket not found: {output_bucket}")
         else:
             raise Exception(error_message)
             
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        raise Exception(f"Error fetching file: {str(e)}")
+        logger.error(f"{str(e)}")
+        raise Exception(f"{str(e)}")
     
     return response_data

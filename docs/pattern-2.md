@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT-0
 
 This pattern implements an intelligent document processing workflow that uses Amazon Bedrock with Nova or Claude models for both page classification/grouping and information extraction.
 
-<img src="../../images/IDP-Pattern2-Bedrock.drawio.png" alt="Architecture" width="800">
+<img src="../images/IDP-Pattern2-Bedrock.drawio.png" alt="Architecture" width="800">
 
 ## Table of Contents
 
@@ -16,6 +16,7 @@ This pattern implements an intelligent document processing workflow that uses Am
     - [Classification Function](#classification-function)
     - [Extraction Function](#extraction-function)
     - [ProcessResults Function](#processresults-function)
+  - [Human-in-the-Loop (HITL)](#human-in-the-loop-hitl)
   - [Monitoring and Metrics](#monitoring-and-metrics)
     - [Performance Metrics](#performance-metrics)
     - [Error Tracking](#error-tracking)
@@ -176,6 +177,17 @@ Each step includes comprehensive retry logic for handling transient errors:
   }
   ```
 
+### Human-in-the-Loop (HITL)
+
+Pattern-2 supports Human-in-the-Loop (HITL) review capabilities using Amazon SageMaker Augmented AI (A2I). This feature allows human reviewers to validate and correct extracted information when the system's confidence falls below a specified threshold.
+
+**Pattern-2 Specific Configuration:**
+- `EnableHITL`: Boolean parameter to enable/disable the HITL feature
+- `IsPattern2HITLEnabled`: Boolean parameter specific to Pattern-2 HITL enablement
+- `Pattern2 - Existing Private Workforce ARN`: Optional parameter to use existing private workforce
+
+For comprehensive HITL documentation including workflow details, configuration steps, best practices, and troubleshooting, see the [Human-in-the-Loop Review Guide](./human-review.md).
+
 ### Monitoring and Metrics
 
 The pattern includes a comprehensive CloudWatch dashboard with:
@@ -213,7 +225,7 @@ The pattern exports these outputs to the parent stack:
 
 **Stack Deployment Parameters:**
 - `ClassificationMethod`: Classification methodology to use (options: 'multimodalPageLevelClassification' or 'textbasedHolisticClassification')
-- `IsSummarizationEnabled`: Boolean to enable/disable summarization functionality (true|false)
+- **Summarization**: Control summarization via configuration file `summarization.enabled` property (replaces `IsSummarizationEnabled` parameter)
 - `ConfigurationDefaultS3Uri`: Optional S3 URI to custom configuration (uses default configuration if not specified)
 - `MaxConcurrentWorkflows`: Workflow concurrency limit
 - `LogRetentionDays`: CloudWatch log retention period
@@ -256,6 +268,9 @@ To use Bedrock OCR:
    - `us.anthropic.claude-3-5-sonnet-20241022-v2:0`
    - `us.anthropic.claude-3-7-sonnet-20250219-v1:0`
    - `us.anthropic.claude-sonnet-4-20250514-v1:0`
+   - `us.anthropic.claude-sonnet-4-20250514-v1:0:1m`
+   - `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
+   - `us.anthropic.claude-sonnet-4-5-20250929-v1:0:1m`
    - `us.anthropic.claude-opus-4-20250514-v1:0`
    - `us.anthropic.claude-opus-4-1-20250805-v1:0`
 3. **Configure prompts**: Customize system and task prompts for your specific use case
@@ -619,16 +634,32 @@ The assessment feature runs after successful extraction and provides:
 
 ### Enabling Assessment
 
-Assessment is controlled by the `IsAssessmentEnabled` deployment parameter:
+Assessment can now be controlled via the configuration file rather than CloudFormation stack parameters. This provides more flexibility and eliminates the need for stack redeployment when changing assessment behavior.
 
-```bash
-# Deploy with assessment enabled
-aws cloudformation deploy \
-  --template-file template.yaml \
-  --parameter-overrides IsAssessmentEnabled=true
+**Configuration-based Control (Recommended):**
+```yaml
+assessment:
+  enabled: true  # Set to false to disable assessment
+  model: us.amazon.nova-lite-v1:0
+  temperature: 0.0
+  # ... other assessment settings
 ```
 
-When enabled, the assessment step is conditionally added to the state machine workflow:
+**Key Benefits:**
+- **Runtime Control**: Enable/disable without stack redeployment
+- **Cost Optimization**: Zero LLM costs when disabled (`enabled: false`)
+- **Simplified Architecture**: No conditional logic in state machines
+- **Backward Compatible**: Defaults to `enabled: true` when property is missing
+
+**Behavior When Disabled:**
+- Assessment lambda is still called (minimal overhead)
+- Service immediately returns with logging: "Assessment is disabled via configuration"
+- No LLM API calls or S3 operations are performed
+- Document processing continues to completion
+
+**Migration Note**: The previous `IsAssessmentEnabled` CloudFormation parameter has been removed in favor of this configuration-based approach.
+
+The assessment step is always called in the state machine workflow, but the service itself handles the enablement decision:
 
 ```
 OCRStep → ClassificationStep → ProcessPageGroups (Map State):

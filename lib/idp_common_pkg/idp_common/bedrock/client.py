@@ -39,6 +39,12 @@ DEFAULT_MAX_BACKOFF = 300    # 5 minutes
 CACHEPOINT_SUPPORTED_MODELS = [
     "us.anthropic.claude-3-5-haiku-20241022-v1:0",
     "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+    "us.anthropic.claude-opus-4-1-20250805-v1:0",
+    "us.anthropic.claude-opus-4-20250514-v1:0",
+    "us.anthropic.claude-sonnet-4-20250514-v1:0",
+    "us.anthropic.claude-sonnet-4-20250514-v1:0:1m",
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0:1m",
     "us.amazon.nova-lite-v1:0",
     "us.amazon.nova-pro-v1:0"
 ]
@@ -213,7 +219,7 @@ class BedrockClient:
         """
         # Track total requests
         self._put_metric('BedrockRequestsTotal', 1)
-        
+               
         # Use instance max_retries if not overridden
         effective_max_retries = max_retries if max_retries is not None else self.max_retries
         
@@ -265,8 +271,9 @@ class BedrockClient:
         # Initialize inference config with temperature
         inference_config = {"temperature": temperature}
         
-        # Handle top_p parameter
-        if top_p is not None:
+        # Handle top_p parameter - only use if temperature is 0 or not specified
+        # Some models don't allow both temperature and top_p to be specified
+        if top_p is not None and temperature == 0.0:
             # Convert top_p to float if it's a string
             if isinstance(top_p, str):
                 try:
@@ -275,7 +282,10 @@ class BedrockClient:
                     logger.warning(f"Failed to convert top_p value '{top_p}' to float. Not using top_p.")
                     top_p = None
             
-            inference_config["topP"] = top_p
+            if top_p is not None:
+                inference_config["topP"] = top_p
+                # Remove temperature when using top_p to avoid conflicts
+                del inference_config["temperature"]
         
         # Handle max_tokens parameter
         if max_tokens is not None:
@@ -292,7 +302,7 @@ class BedrockClient:
                 inference_config["maxTokens"] = max_tokens
         
         # Add additional model fields if needed
-        additional_model_fields = {}
+        additional_model_fields = {}     
         
         # Handle top_k parameter
         if top_k is not None:
@@ -322,6 +332,14 @@ class BedrockClient:
                 if "inferenceConfig" not in additional_model_fields:
                     additional_model_fields["inferenceConfig"] = {}
                 additional_model_fields["inferenceConfig"]["topK"] = int(top_k)
+
+        # Add 1M context headers if needed
+        use_model_id = model_id
+        if model_id and model_id.endswith(':1m'):
+            use_model_id = model_id[:-3]  # Remove ':1m'
+            if additional_model_fields is None:
+                additional_model_fields = {}
+            additional_model_fields["anthropic_beta"] = ["context-1m-2025-08-07"]
         
         # If no additional model fields were added, set to None
         if not additional_model_fields:
@@ -332,7 +350,7 @@ class BedrockClient:
         
         # Build converse parameters
         converse_params = {
-            "modelId": model_id,
+            "modelId": use_model_id,
             "messages": messages,
             "system": formatted_system_prompt,
             "inferenceConfig": inference_config,
@@ -348,6 +366,7 @@ class BedrockClient:
         
         # Call the recursive retry function
         result = self._invoke_with_retry(
+            model_id=model_id,
             converse_params=converse_params,
             retry_count=0,
             max_retries=effective_max_retries,
@@ -356,9 +375,10 @@ class BedrockClient:
         )
         
         return result
-    
+
     def _invoke_with_retry(
         self,
+        model_id: str,
         converse_params: Dict[str, Any],
         retry_count: int,
         max_retries: int,
@@ -402,7 +422,7 @@ class BedrockClient:
             
             # Start timing this attempt
             attempt_start_time = time.time()
-            
+
             # Make the API call
             response = self.client.converse(**converse_params)
             
@@ -442,7 +462,7 @@ class BedrockClient:
             response_with_metering = {
                 "response": response,
                 "metering": {
-                    f"{context}/bedrock/{converse_params['modelId']}": {
+                    f"{context}/bedrock/{model_id}": {
                         **usage
                     }
                 }
@@ -487,6 +507,7 @@ class BedrockClient:
                 
                 # Recursive call with incremented retry count
                 return self._invoke_with_retry(
+                    model_id=model_id,
                     converse_params=converse_params,
                     retry_count=retry_count + 1,
                     max_retries=max_retries,
@@ -525,6 +546,7 @@ class BedrockClient:
             
             # Recursive call with incremented retry count
             return self._invoke_with_retry(
+                model_id=model_id,
                 converse_params=converse_params,
                 retry_count=retry_count + 1,
                 max_retries=max_retries,
@@ -842,6 +864,9 @@ class BedrockClient:
                     elif isinstance(content_item, dict) and 'bytes' in content_item:
                         # Handle raw binary format
                         content_item['bytes'] = '[binary_data]'
+                    elif isinstance(content_item, dict) and 'document' in content_item:
+                        # Handle different image format used by some models
+                        content_item['document'] = '[document_data]'
         
         return sanitized
     

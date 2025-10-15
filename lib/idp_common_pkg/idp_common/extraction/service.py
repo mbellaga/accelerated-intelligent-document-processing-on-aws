@@ -12,11 +12,24 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Type
+
+from pydantic import BaseModel, Field, create_model
 
 from idp_common import bedrock, image, metrics, s3, utils
 from idp_common.models import Document
+
+# Conditional import for agentic extraction (requires Python 3.10+ dependencies)
+try:
+    from idp_common.extraction.agentic_idp import structured_output
+
+    AGENTIC_AVAILABLE = True
+except ImportError:
+    AGENTIC_AVAILABLE = False
 from idp_common.utils import extract_json_from_text
+
+logger = logging.getLogger(__name__)
+
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +82,81 @@ class ExtractionService:
         attributes = class_config.get("attributes", [])
         return attributes if attributes is not None else []
 
+    def _create_pydantic_model_from_attributes(
+        self, class_label: str, attributes: List[Dict[str, Any]]
+    ) -> Type[BaseModel]:
+        """
+        Dynamically create a Pydantic model from configuration attributes.
+
+        Args:
+            class_label: The document class name
+            attributes: List of attribute configurations
+
+        Returns:
+            Dynamically created Pydantic model class
+        """
+        if not attributes:
+            # Return a minimal model for empty attributes
+            return create_model(f"{class_label}Model", __base__=BaseModel)
+
+        fields = {}
+
+        for attr in attributes:
+            attr_name = attr.get("name", "")
+            attr_description = attr.get("description", "")
+            attr_type = attr.get("attributeType", "simple")
+
+            if not attr_name:
+                continue
+
+            # Determine field type and default
+            if attr_type == "group":
+                # For group attributes, create nested model
+                group_attributes = attr.get("groupAttributes", [])
+                if group_attributes:
+                    nested_model = self._create_pydantic_model_from_attributes(
+                        f"{class_label}_{attr_name}", group_attributes
+                    )
+                    fields[attr_name] = (
+                        Optional[nested_model],
+                        Field(None, description=attr_description),
+                    )
+                else:
+                    fields[attr_name] = (
+                        Optional[str],
+                        Field(None, description=attr_description),
+                    )
+
+            elif attr_type == "list":
+                # For list attributes, create list of items
+                list_template = attr.get("listItemTemplate", {})
+                item_attributes = list_template.get("itemAttributes", [])
+
+                if item_attributes:
+                    item_model = self._create_pydantic_model_from_attributes(
+                        f"{class_label}_{attr_name}_Item", item_attributes
+                    )
+                    fields[attr_name] = (
+                        Optional[List[item_model]],
+                        Field(None, description=attr_description),
+                    )
+                else:
+                    fields[attr_name] = (
+                        Optional[List[str]],
+                        Field(None, description=attr_description),
+                    )
+
+            else:
+                # Simple attribute - default to optional string
+                fields[attr_name] = (
+                    Optional[str],
+                    Field(None, description=attr_description),
+                )
+
+        # Create the model with proper name
+        model_name = f"{class_label.replace(' ', '').replace('-', '_')}ExtractionModel"
+        return create_model(model_name, **fields, __base__=BaseModel)
+
     def _format_attribute_descriptions(self, attributes: List[Dict[str, Any]]) -> str:
         """
         Format attribute descriptions for the prompt, supporting nested structures.
@@ -118,6 +206,140 @@ class ExtractionService:
                 formatted_lines.append(f"{attr_name}  \t[ {attr_description} ]")
 
         return "\n".join(formatted_lines)
+
+    def _create_dynamic_model_from_attributes(
+        self, attributes: List[Dict[str, Any]], class_label: str
+    ) -> Type[BaseModel]:
+        """
+        Create a dynamic Pydantic model from configuration attributes.
+
+        Args:
+            attributes: List of attribute configurations from the class config
+            class_label: The document class name (for model naming)
+
+        Returns:
+            Dynamically created Pydantic model class
+        """
+        if not attributes:
+            # Create a simple model with just a raw_output field if no attributes defined
+            return create_model(
+                f"{class_label}ExtractionModel",
+                raw_output=(
+                    Optional[str],
+                    Field(None, description="Raw extraction output"),
+                ),
+            )
+
+        model_fields = {}
+
+        for attr in attributes:
+            attr_name = attr.get("name", "").replace(" ", "_").replace("-", "_")
+            if not attr_name:
+                continue
+
+            attr_description = attr.get("description", "")
+            attr_type = attr.get("attributeType", "simple")
+
+            if attr_type == "group":
+                # Handle group attributes - create nested model
+                group_fields = {}
+                group_attributes = attr.get("groupAttributes", [])
+
+                for group_attr in group_attributes:
+                    group_name = (
+                        group_attr.get("name", "").replace(" ", "_").replace("-", "_")
+                    )
+                    if group_name:
+                        group_desc = group_attr.get("description", "")
+                        group_fields[group_name] = (
+                            Optional[str],
+                            Field(None, description=group_desc),
+                        )
+
+                if group_fields:
+                    # Create nested model for the group
+                    nested_model = create_model(
+                        f"{attr_name.title()}Group", **group_fields
+                    )
+                    model_fields[attr_name] = (
+                        Optional[nested_model],
+                        Field(None, description=attr_description),
+                    )
+                else:
+                    # Fallback to optional string if no group attributes
+                    model_fields[attr_name] = (
+                        Optional[str],
+                        Field(None, description=attr_description),
+                    )
+
+            elif attr_type == "list":
+                # Handle list attributes - create list of nested items
+                list_template = attr.get("listItemTemplate", {})
+                item_attributes = list_template.get("itemAttributes", [])
+
+                if item_attributes:
+                    # Create model for list items
+                    item_fields = {}
+                    for item_attr in item_attributes:
+                        item_name = (
+                            item_attr.get("name", "")
+                            .replace(" ", "_")
+                            .replace("-", "_")
+                        )
+                        if item_name:
+                            item_desc = item_attr.get("description", "")
+                            item_fields[item_name] = (
+                                Optional[str],
+                                Field(None, description=item_desc),
+                            )
+
+                    if item_fields:
+                        # Create nested model for list items
+                        item_model = create_model(
+                            f"{attr_name.title()}Item", **item_fields
+                        )
+                        model_fields[attr_name] = (
+                            Optional[List[item_model]],
+                            Field(None, description=attr_description),
+                        )
+                    else:
+                        # Fallback to list of strings
+                        model_fields[attr_name] = (
+                            Optional[List[str]],
+                            Field(None, description=attr_description),
+                        )
+                else:
+                    # Simple list of strings
+                    model_fields[attr_name] = (
+                        Optional[List[str]],
+                        Field(None, description=attr_description),
+                    )
+
+            else:
+                # Handle simple attributes (default case)
+                model_fields[attr_name] = (
+                    Optional[str],
+                    Field(None, description=attr_description),
+                )
+
+        # Add a fallback field for any additional data
+        model_fields["additional_data"] = (
+            Optional[Dict[str, Any]],
+            Field(
+                None,
+                description="Any additional extracted data not covered by specific fields",
+            ),
+        )
+
+        # Create the dynamic model
+        model_name = f"{class_label.replace(' ', '').replace('-', '')}ExtractionModel"
+        dynamic_model = create_model(model_name, **model_fields)
+
+        logger.info(
+            f"Created dynamic Pydantic model '{model_name}' with {len(model_fields)} fields"
+        )
+
+        return dynamic_model
 
     def _prepare_prompt_from_template(
         self,
@@ -525,6 +747,190 @@ class ExtractionService:
                     "No CONFIGURATION_BUCKET or ROOT_DIR set. Cannot read example images from local filesystem."
                 )
 
+    def _make_json_serializable(self, obj):
+        """
+        Recursively convert any object to a JSON-serializable format.
+
+        Args:
+            obj: Object to make JSON serializable
+
+        Returns:
+            JSON-serializable version of the object
+        """
+        from enum import Enum
+
+        if isinstance(obj, dict):
+            return {
+                key: self._make_json_serializable(value) for key, value in obj.items()
+            }
+        elif isinstance(obj, (list, tuple)):
+            return [self._make_json_serializable(item) for item in obj]
+        elif isinstance(obj, Enum):
+            return obj.value
+        elif hasattr(obj, "__dict__"):
+            # Handle custom objects by converting to dict
+            return self._make_json_serializable(obj.__dict__)
+        elif hasattr(obj, "to_dict"):
+            # Handle objects with to_dict method
+            return self._make_json_serializable(obj.to_dict())
+        elif isinstance(obj, bytes):
+            # Convert bytes to base64 string or placeholder
+            return f"<bytes_object_{len(obj)}_bytes>"
+        else:
+            try:
+                # Test if it's already JSON serializable
+                json.dumps(obj)
+                return obj
+            except (TypeError, ValueError):
+                # Convert non-serializable objects to string representation
+                return str(obj)
+
+    def _convert_image_bytes_to_uris_in_content(
+        self, content: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Convert image bytes to URIs in content array for JSON serialization.
+
+        Args:
+            content: Content array that may contain image objects with bytes
+
+        Returns:
+            Content array with image URIs instead of bytes
+        """
+        converted_content = []
+
+        for item in content:
+            if "image" in item and isinstance(item["image"], dict):
+                # Extract image URI if it exists, or use placeholder
+                if "source" in item["image"] and "bytes" in item["image"]["source"]:
+                    # This is a bytes-based image - replace with URI reference
+                    # In practice, we need to store these bytes somewhere accessible
+                    # For now, we'll use a placeholder that indicates bytes were present
+                    converted_item = {
+                        "image_uri": f"<image_bytes_placeholder_{len(converted_content)}>"
+                    }
+                else:
+                    # Keep other image formats as-is
+                    converted_item = item.copy()
+            else:
+                # Keep non-image items as-is
+                converted_item = item.copy()
+
+            converted_content.append(converted_item)
+
+        return converted_content
+
+    def _convert_image_uris_to_bytes_in_content(
+        self, content: List[Dict[str, Any]], original_images: List[Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        Convert image URIs back to bytes in content array after Lambda processing.
+
+        Args:
+            content: Content array from Lambda that may contain image URIs
+            original_images: Original image data to restore
+
+        Returns:
+            Content array with image bytes restored
+        """
+        converted_content = []
+        image_index = 0
+
+        for item in content:
+            if "image_uri" in item:
+                # Convert image URI back to bytes format
+                if image_index < len(original_images):
+                    # Restore original image bytes
+                    converted_item = image.prepare_bedrock_image_attachment(
+                        original_images[image_index]
+                    )
+                    image_index += 1
+                else:
+                    # Skip if no original image data
+                    logger.warning(
+                        "No original image data available for URI conversion"
+                    )
+                    continue
+            elif "image" in item:
+                # Keep existing image objects as-is
+                converted_item = item.copy()
+            else:
+                # Keep non-image items as-is
+                converted_item = item.copy()
+
+            converted_content.append(converted_item)
+
+        return converted_content
+
+    def _invoke_custom_prompt_lambda(
+        self, lambda_arn: str, payload: dict, original_images: List[Any] = None
+    ) -> dict:
+        """
+        Invoke custom prompt generator Lambda function with JSON-serializable payload.
+
+        Args:
+            lambda_arn: ARN of the Lambda function to invoke
+            payload: Payload to send to Lambda function (must be JSON serializable)
+            original_images: Original image data for restoration after Lambda processing
+
+        Returns:
+            Dict containing system_prompt and task_prompt_content with images restored
+
+        Raises:
+            Exception: If Lambda invocation fails or returns invalid response
+        """
+        import boto3
+
+        lambda_client = boto3.client("lambda", region_name=self.region)
+
+        try:
+            logger.info(f"Invoking custom prompt Lambda: {lambda_arn}")
+            response = lambda_client.invoke(
+                FunctionName=lambda_arn,
+                InvocationType="RequestResponse",
+                Payload=json.dumps(payload),
+            )
+
+            if response.get("FunctionError"):
+                error_payload = response.get("Payload", b"").read().decode()
+                error_msg = f"Custom prompt Lambda failed: {error_payload}"
+                logger.error(error_msg)
+                raise Exception(error_msg)
+
+            result = json.loads(response["Payload"].read())
+            logger.info("Custom prompt Lambda invoked successfully")
+
+            # Validate response structure
+            if not isinstance(result, dict):
+                error_msg = f"Custom prompt Lambda returned invalid response format: expected dict, got {type(result)}"
+                logger.error(error_msg)
+                raise Exception(error_msg)
+
+            if "system_prompt" not in result:
+                error_msg = "Custom prompt Lambda response missing required field: system_prompt"
+                logger.error(error_msg)
+                raise Exception(error_msg)
+
+            if "task_prompt_content" not in result:
+                error_msg = "Custom prompt Lambda response missing required field: task_prompt_content"
+                logger.error(error_msg)
+                raise Exception(error_msg)
+
+            # Convert image URIs back to bytes in the response
+            if original_images:
+                result["task_prompt_content"] = (
+                    self._convert_image_uris_to_bytes_in_content(
+                        result["task_prompt_content"], original_images
+                    )
+                )
+
+            return result
+
+        except Exception as e:
+            error_msg = f"Failed to invoke custom prompt Lambda {lambda_arn}: {str(e)}"
+            logger.error(error_msg)
+            raise Exception(error_msg)
+
     def process_document_section(self, document: Document, section_id: str) -> Document:
         """
         Process a single section from a Document object.
@@ -688,78 +1094,218 @@ class ExtractionService:
                 )
                 return document
 
-            # Prepare prompt
-            prompt_template = extraction_config.get("task_prompt", "")
+            # Check for custom prompt Lambda function
+            custom_lambda_arn = extraction_config.get("custom_prompt_lambda_arn")
 
-            if not prompt_template:
-                # Default prompt if template not found
-                task_prompt = f"""
-                Extract the following fields from this {class_label} document:
-                
-                {attribute_descriptions}
-                
-                Document text:
-                {document_text}
-                
-                Respond with a JSON object containing each field name and its extracted value.
-                """
-                content = [{"text": task_prompt}]
+            if custom_lambda_arn and custom_lambda_arn.strip():
+                logger.info(f"Using custom prompt Lambda: {custom_lambda_arn}")
 
-                # Add image attachments to the content (limit to 20 images as per Bedrock constraints)
-                if page_images:
-                    logger.info(
-                        f"Attaching images to prompt, for {len(page_images)} pages."
-                    )
-                    # Limit to 20 images as per Bedrock constraints
-                    for img in page_images[:20]:
-                        content.append(image.prepare_bedrock_image_attachment(img))
-            else:
-                # Check if task prompt contains FEW_SHOT_EXAMPLES placeholder
-                if "{FEW_SHOT_EXAMPLES}" in prompt_template:
-                    content = self._build_content_with_few_shot_examples(
-                        prompt_template,
-                        document_text,
-                        class_label,
-                        attribute_descriptions,
-                        page_images,  # Pass images to the content builder
-                    )
+                # Prepare prompt placeholders including image URIs
+                image_uris = []
+                for page_id in sorted_page_ids:
+                    if page_id in document.pages:
+                        page = document.pages[page_id]
+                        if page.image_uri:
+                            image_uris.append(page.image_uri)
+
+                prompt_placeholders = {
+                    "DOCUMENT_TEXT": document_text,
+                    "DOCUMENT_CLASS": class_label,
+                    "ATTRIBUTE_NAMES_AND_DESCRIPTIONS": attribute_descriptions,
+                    "DOCUMENT_IMAGE": image_uris,
+                }
+
+                logger.info(
+                    f"Lambda will receive {len(image_uris)} image URIs in DOCUMENT_IMAGE placeholder"
+                )
+
+                # Build default content for Lambda input
+                prompt_template = extraction_config.get("task_prompt", "")
+                if prompt_template:
+                    # Check if task prompt contains FEW_SHOT_EXAMPLES placeholder
+                    if "{FEW_SHOT_EXAMPLES}" in prompt_template:
+                        default_content = self._build_content_with_few_shot_examples(
+                            prompt_template,
+                            document_text,
+                            class_label,
+                            attribute_descriptions,
+                            page_images,
+                        )
+                    else:
+                        # Use the unified content builder for DOCUMENT_IMAGE placeholder support
+                        default_content = (
+                            self._build_content_with_or_without_image_placeholder(
+                                prompt_template,
+                                document_text,
+                                class_label,
+                                attribute_descriptions,
+                                page_images,
+                            )
+                        )
                 else:
-                    # Use the unified content builder for DOCUMENT_IMAGE placeholder support
+                    # Default content if no template
+                    task_prompt = f"""
+                    Extract the following fields from this {class_label} document:
+                    
+                    {attribute_descriptions}
+                    
+                    Document text:
+                    {document_text}
+                    
+                    Respond with a JSON object containing each field name and its extracted value.
+                    """
+                    default_content = [{"text": task_prompt}]
+                    if page_images:
+                        for img in page_images[:20]:
+                            default_content.append(
+                                image.prepare_bedrock_image_attachment(img)
+                            )
+
+                # Prepare Lambda payload with JSON-serializable content
+                try:
+                    # Use Document's built-in to_dict() method which properly handles Status enum conversion
+                    document_dict = document.to_dict()
+                except Exception as e:
+                    logger.warning(
+                        f"Error serializing document for Lambda payload: {e}"
+                    )
+                    document_dict = {"id": getattr(document, "id", "unknown")}
+
+                # Convert image bytes to URIs in default content for JSON serialization
+                serializable_default_content = (
+                    self._convert_image_bytes_to_uris_in_content(default_content)
+                )
+
+                # Create fully serializable payload using comprehensive helper
+                payload = {
+                    "config": self._make_json_serializable(self.config),
+                    "prompt_placeholders": prompt_placeholders,
+                    "default_task_prompt_content": serializable_default_content,
+                    "serialized_document": document_dict,
+                }
+
+                # Test JSON serialization before sending to Lambda to catch any remaining issues
+                try:
+                    json.dumps(payload)
+                    logger.info("Lambda payload successfully serialized")
+                except (TypeError, ValueError) as e:
+                    logger.error(
+                        f"Lambda payload still contains non-serializable data: {e}"
+                    )
+                    logger.info("Using comprehensive serialization as fallback")
+                    # Apply comprehensive serialization to entire payload
+                    payload = self._make_json_serializable(payload)
                     try:
-                        content = self._build_content_with_or_without_image_placeholder(
+                        json.dumps(payload)
+                        logger.info("Comprehensive serialization successful")
+                    except (TypeError, ValueError) as e2:
+                        logger.error(f"Even comprehensive serialization failed: {e2}")
+                        # Ultimate fallback to minimal payload
+                        payload = {
+                            "config": {
+                                "extraction": {
+                                    "model": extraction_config.get("model", "")
+                                }
+                            },
+                            "prompt_placeholders": prompt_placeholders,
+                            "default_task_prompt_content": [
+                                {"text": "Fallback content"}
+                            ],
+                            "serialized_document": {
+                                "id": str(document.id),
+                                "status": "PROCESSING",
+                            },
+                        }
+
+                # Invoke custom Lambda and get result (pass original images for restoration)
+                lambda_result = self._invoke_custom_prompt_lambda(
+                    custom_lambda_arn, payload, page_images
+                )
+
+                # Use Lambda results
+                system_prompt = lambda_result.get("system_prompt", system_prompt)
+                content = lambda_result.get("task_prompt_content", default_content)
+
+                logger.info("Successfully applied custom prompt from Lambda function")
+
+            else:
+                # Use default prompt logic when no custom Lambda is configured
+                logger.info(
+                    "No custom prompt Lambda configured - using default prompt generation"
+                )
+                prompt_template = extraction_config.get("task_prompt", "")
+
+                if not prompt_template:
+                    # Default prompt if template not found
+                    task_prompt = f"""
+                    Extract the following fields from this {class_label} document:
+                    
+                    {attribute_descriptions}
+                    
+                    Document text:
+                    {document_text}
+                    
+                    Respond with a JSON object containing each field name and its extracted value.
+                    """
+                    content = [{"text": task_prompt}]
+
+                    # Add image attachments to the content (limit to 20 images as per Bedrock constraints)
+                    if page_images:
+                        logger.info(
+                            f"Attaching images to prompt, for {len(page_images)} pages."
+                        )
+                        # Limit to 20 images as per Bedrock constraints
+                        for img in page_images[:20]:
+                            content.append(image.prepare_bedrock_image_attachment(img))
+                else:
+                    # Check if task prompt contains FEW_SHOT_EXAMPLES placeholder
+                    if "{FEW_SHOT_EXAMPLES}" in prompt_template:
+                        content = self._build_content_with_few_shot_examples(
                             prompt_template,
                             document_text,
                             class_label,
                             attribute_descriptions,
                             page_images,  # Pass images to the content builder
                         )
-                    except ValueError as e:
-                        logger.warning(
-                            f"Error formatting prompt template: {str(e)}. Using default prompt."
-                        )
-                        # Fall back to default prompt if template validation fails
-                        task_prompt = f"""
-                        Extract the following fields from this {class_label} document:
-                        
-                        {attribute_descriptions}
-                        
-                        Document text:
-                        {document_text}
-                        
-                        Respond with a JSON object containing each field name and its extracted value.
-                        """
-                        content = [{"text": task_prompt}]
-
-                        # Add image attachments for fallback case
-                        if page_images:
-                            logger.info(
-                                f"Attaching images to prompt, for {len(page_images)} pages."
-                            )
-                            # Limit to 20 images as per Bedrock constraints
-                            for img in page_images[:20]:
-                                content.append(
-                                    image.prepare_bedrock_image_attachment(img)
+                    else:
+                        # Use the unified content builder for DOCUMENT_IMAGE placeholder support
+                        try:
+                            content = (
+                                self._build_content_with_or_without_image_placeholder(
+                                    prompt_template,
+                                    document_text,
+                                    class_label,
+                                    attribute_descriptions,
+                                    page_images,  # Pass images to the content builder
                                 )
+                            )
+                        except ValueError as e:
+                            logger.warning(
+                                f"Error formatting prompt template: {str(e)}. Using default prompt."
+                            )
+                            # Fall back to default prompt if template validation fails
+                            task_prompt = f"""
+                            Extract the following fields from this {class_label} document:
+                            
+                            {attribute_descriptions}
+                            
+                            Document text:
+                            {document_text}
+                            
+                            Respond with a JSON object containing each field name and its extracted value.
+                            """
+                            content = [{"text": task_prompt}]
+
+                            # Add image attachments for fallback case
+                            if page_images:
+                                logger.info(
+                                    f"Attaching images to prompt, for {len(page_images)} pages."
+                                )
+                                # Limit to 20 images as per Bedrock constraints
+                                for img in page_images[:20]:
+                                    content.append(
+                                        image.prepare_bedrock_image_attachment(img)
+                                    )
 
             logger.info(
                 f"Extracting fields for {class_label} document, section {section_id}"
@@ -768,40 +1314,91 @@ class ExtractionService:
             # Time the model invocation
             request_start_time = time.time()
 
-            # Invoke Bedrock with the common library
-            response_with_metering = bedrock.invoke_model(
-                model_id=model_id,
-                system_prompt=system_prompt,
-                content=content,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                max_tokens=max_tokens,
-                context="Extraction",
-            )
+            if (
+                self.config.get("extraction", {})
+                .get("agentic", {})
+                .get("enabled", False)
+            ):
+                if not AGENTIC_AVAILABLE:
+                    raise ImportError(
+                        "Agentic extraction requires Python 3.10+ and strands-agents dependencies. "
+                        "Install with: pip install 'idp_common[agents]' or use agentic=False"
+                    )
+
+                # Create dynamic Pydantic model from configuration attributes
+                dynamic_model = self._create_pydantic_model_from_attributes(
+                    class_label, attributes
+                )
+
+                # Log the Pydantic model schema for debugging
+                model_schema = dynamic_model.model_json_schema()
+                logger.debug(f"Pydantic model schema for {class_label}:")
+                logger.debug(json.dumps(model_schema, indent=2))
+
+                # Use agentic extraction with the dynamic model
+                # Wrap content list in proper Message format for agentic_idp compatibility
+                if isinstance(content, list):
+                    message_prompt = {"role": "user", "content": content}
+                else:
+                    message_prompt = content
+                logger.info("Using Agentic extraction")
+                logger.debug(f"Using input: {str(message_prompt)}")
+                structured_data, response_with_metering = structured_output(  # pyright: ignore[reportPossiblyUnboundVariable]
+                    model_id=model_id,
+                    data_format=dynamic_model,
+                    prompt=message_prompt,  # pyright: ignore[reportArgumentType]
+                    custom_instruction=system_prompt,
+                    review_agent=self.config.get("extraction", {}).get(
+                        "review_agent", False
+                    ),
+                    context="Extraction",
+                )
+
+                # Extract the structured data as dict for compatibility with existing code
+                extracted_fields = structured_data.model_dump()
+                # Extract metering from BedrockInvokeModelResponse
+                metering = response_with_metering["metering"]
+                parsing_succeeded = True  # Agentic approach always succeeds in parsing since it returns structured data
+
+            else:
+                # Invoke Bedrock with the common library
+                response_with_metering = bedrock.invoke_model(
+                    model_id=model_id,
+                    system_prompt=system_prompt,
+                    content=content,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    max_tokens=max_tokens,
+                    context="Extraction",
+                )
+                # For non-agentic approach, response_with_metering is BedrockInvokeModelResponse
+                # Extract text from response for non-agentic approach
+                extracted_text = bedrock.extract_text_from_response(
+                    dict(response_with_metering)
+                )
+                metering = response_with_metering["metering"]
+
+                # Parse response into JSON
+                extracted_fields = {}
+                parsing_succeeded = True  # Flag to track if parsing was successful
+
+                try:
+                    # Try to parse the extracted text as JSON
+                    extracted_fields = json.loads(
+                        extract_json_from_text(extracted_text)
+                    )
+                except Exception as e:
+                    # Handle parsing error
+                    logger.error(
+                        f"Error parsing LLM output - invalid JSON?: {extracted_text} - {e}"
+                    )
+                    logger.info("Using unparsed LLM output.")
+                    extracted_fields = {"raw_output": extracted_text}
+                    parsing_succeeded = False  # Mark that parsing failed
 
             total_duration = time.time() - request_start_time
             logger.info(f"Time taken for extraction: {total_duration:.2f} seconds")
-
-            # Extract text from response
-            extracted_text = bedrock.extract_text_from_response(response_with_metering)
-            metering = response_with_metering.get("metering", {})
-
-            # Parse response into JSON
-            extracted_fields = {}
-            parsing_succeeded = True  # Flag to track if parsing was successful
-
-            try:
-                # Try to parse the extracted text as JSON
-                extracted_fields = json.loads(extract_json_from_text(extracted_text))
-            except Exception as e:
-                # Handle parsing error
-                logger.error(
-                    f"Error parsing LLM output - invalid JSON?: {extracted_text} - {e}"
-                )
-                logger.info("Using unparsed LLM output.")
-                extracted_fields = {"raw_output": extracted_text}
-                parsing_succeeded = False  # Mark that parsing failed
 
             # Write to S3
             output = {

@@ -16,7 +16,7 @@ The web interface allows real-time configuration updates without stack redeploym
 - **Prompt Engineering**: Customize system and task prompts for optimal results
 - **OCR Features**: Configure Textract features (TABLES, FORMS, SIGNATURES, LAYOUT) for enhanced data capture
 - **Evaluation Methods**: Set evaluation methods and thresholds for each attribute
-- **Summarization**: Configure model, prompts, and parameters for document summarization (when `IsSummarizationEnabled` is true)
+- **Summarization**: Configure model, prompts, parameters, and enable/disable document summarization via the `enabled` property
 
 ### Configuration Management Features
 
@@ -26,6 +26,95 @@ The web interface allows real-time configuration updates without stack redeploym
 - **Restore Default**: Reset all configuration settings back to the original default values, removing all customizations.
 
 Configuration changes are validated and applied immediately, with rollback capability if issues arise. See [web-ui.md](web-ui.md) for details on using the administration interface.
+
+## Custom Configuration Path
+
+The solution now supports specifying a custom configuration file location via the `CustomConfigPath` CloudFormation parameter. This allows you to use your own configuration files stored in S3 instead of the default configuration library.
+
+### Usage
+
+When deploying the stack, you can specify a custom configuration file:
+
+```yaml
+CustomConfigPath: "s3://my-bucket/custom-config/config.yaml"
+```
+
+**Key Features:**
+- **Override Default Configuration**: When specified, your custom configuration completely replaces the default pattern configuration
+- **S3 URI Format**: Accepts standard S3 URI format (e.g., `s3://my-bucket/custom-config/config.yaml`)
+- **Least-Privilege Security**: IAM permissions are conditionally granted only to the specific S3 bucket and object you specify
+- **All Patterns Supported**: Works with Pattern 1 (BDA), Pattern 2 (Textract + Bedrock), and Pattern 3 (Textract + UDOP + Bedrock)
+
+**Security Benefits:**
+- Eliminates wildcard S3 permissions (`arn:aws:s3:::*/*`)
+- Conditional IAM access only when CustomConfigPath is specified
+- Proper S3 URI to ARN conversion for least-privilege compliance
+- Passes security scans with minimal required permissions
+
+**Configuration File Requirements:**
+- Must be valid YAML format
+- Should include all required sections for your chosen pattern (ocr, classes, classification, extraction, etc.)
+- Follow the same structure as the default configuration files in the `config_library` directory
+
+Leave the `CustomConfigPath` parameter empty (default) to use the standard configuration library included with the solution.
+
+## Summarization Configuration
+
+### Enable/Disable Summarization
+
+Summarization can be controlled via the configuration file rather than CloudFormation stack parameters. This provides more flexibility and eliminates the need for stack redeployment when changing summarization behavior.
+
+**Configuration-based Control (Recommended):**
+```yaml
+summarization:
+  enabled: true  # Set to false to disable summarization
+  model: us.anthropic.claude-3-7-sonnet-20250219-v1:0
+  temperature: 0.0
+  # ... other summarization settings
+```
+
+**Key Benefits:**
+- **Runtime Control**: Enable/disable without stack redeployment
+- **Cost Optimization**: Zero LLM costs when disabled (`enabled: false`)
+- **Simplified Architecture**: No conditional logic in state machines
+- **Backward Compatible**: Defaults to `enabled: true` when property is missing
+
+**Behavior When Disabled:**
+- Summarization lambda is still called (minimal overhead)
+- Service immediately returns with logging: "Summarization is disabled in configuration"
+- No LLM API calls or S3 operations are performed
+- Document processing continues to completion
+
+**Migration Note**: The previous `IsSummarizationEnabled` CloudFormation parameter has been removed in favor of this configuration-based approach.
+
+## Assessment Configuration
+
+### Enable/Disable Assessment
+
+Similar to summarization, assessment can now be controlled via the configuration file rather than CloudFormation stack parameters. This provides more flexibility and eliminates the need for stack redeployment when changing assessment behavior.
+
+**Configuration-based Control (Recommended):**
+```yaml
+assessment:
+  enabled: true  # Set to false to disable assessment
+  model: us.amazon.nova-lite-v1:0
+  temperature: 0.0
+  # ... other assessment settings
+```
+
+**Key Benefits:**
+- **Runtime Control**: Enable/disable without stack redeployment
+- **Cost Optimization**: Zero LLM costs when disabled (`enabled: false`)
+- **Simplified Architecture**: No conditional logic in state machines
+- **Backward Compatible**: Defaults to `enabled: true` when property is missing
+
+**Behavior When Disabled:**
+- Assessment lambda is still called (minimal overhead)
+- Service immediately returns with logging: "Assessment is disabled via configuration"
+- No LLM API calls or S3 operations are performed
+- Document processing continues to completion
+
+**Migration Note**: The previous `IsAssessmentEnabled` CloudFormation parameter has been removed in favor of this configuration-based approach.
 
 ## Stack Parameters
 
@@ -42,6 +131,7 @@ Key parameters that can be configured during CloudFormation deployment:
 - `WAFAllowedIPv4Ranges`: IP restrictions for web UI access (default: allow all)
 - `CloudFrontPriceClass`: Set CloudFront price class for UI distribution
 - `CloudFrontAllowedGeos`: Optional geographic restrictions for UI access
+- `CustomConfigPath`: Optional S3 URI to a custom configuration file that overrides pattern presets. Leave blank to use selected pattern configuration. Example: s3://my-bucket/custom-config/config.yaml
 
 ### Pattern Selection
 - `IDPPattern`: Select processing pattern:
@@ -64,12 +154,11 @@ Key parameters that can be configured during CloudFormation deployment:
   - `Pattern3Configuration`: Configuration preset to use
 
 ### Optional Features
-- `IsSummarizationEnabled`: Enable/disable document summarization (default: true)
 - `EvaluationBaselineBucketName`: Optional existing bucket for ground truth data
 - `EvaluationAutoEnabled`: Enable automatic accuracy evaluation (default: true)
 - `DocumentKnowledgeBase`: Enable document knowledge base functionality
 - `KnowledgeBaseModelId`: Bedrock model for knowledge base queries
-- `PostProcessingLambdaHookFunctionArn`: Optional Lambda ARN for custom post-processing
+- `PostProcessingLambdaHookFunctionArn`: Optional Lambda ARN for custom post-processing (see [post-processing-lambda-hook.md](post-processing-lambda-hook.md) for detailed implementation guidance)
 - `BedrockGuardrailId`: Optional Bedrock Guardrail ID to apply
 - `BedrockGuardrailVersion`: Version of Bedrock Guardrail to use
 
@@ -199,16 +288,7 @@ See [web-ui.md](web-ui.md) for details on using the dashboard.
 Use the included script to check document processing status via CLI:
 
 ```bash
-bash scripts/lookup_file_status.sh <STACK_NAME> <DOCUMENT_KEY>
-```
-
-or directly using the Lambda function:
-
-```bash
-aws lambda invoke \
-  --function-name <STACK_NAME>-LookupFunction \
-  --payload '{"document_key":"<DOCUMENT_KEY>"}' \
-  output.json && cat output.json | jq
+bash scripts/lookup_file_status.sh <DOCUMENT_KEY> <STACK_NAME>
 ```
 
 ### Response Format

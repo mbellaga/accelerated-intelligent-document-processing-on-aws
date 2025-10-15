@@ -26,6 +26,66 @@ The solution includes a responsive web-based user interface built with React tha
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
 
+## Edit Sections
+
+The Edit Sections feature provides an intelligent interface for modifying document section classifications and page assignments, with automatic reprocessing optimization for Pattern-2 and Pattern-3 workflows.
+
+### Key Capabilities
+
+- **Section Management**: Create, update, and delete document sections with validation
+- **Classification Updates**: Change section document types with real-time validation
+- **Page Reassignment**: Move pages between sections with overlap detection
+- **Intelligent Reprocessing**: Only modified sections are reprocessed, preserving existing data
+- **Immediate Feedback**: Status updates appear instantly in the UI
+- **Pattern Compatibility**: Available for Pattern-2 and Pattern-3, with informative guidance for Pattern-1
+
+### How to Use
+
+1. Navigate to a completed document's detail page
+2. In the "Document Sections" panel, click the "Edit Sections" button
+3. **For Pattern-2/Pattern-3**: Enter edit mode with inline editing capabilities
+4. **For Pattern-1**: View informative modal explaining BDA architecture differences
+
+#### Editing Workflow (Pattern-2/Pattern-3)
+
+1. **Edit Section Classifications**: Use dropdowns to change document types
+2. **Modify Page Assignments**: Edit comma-separated page IDs (e.g., "1, 2, 3")
+3. **Add New Sections**: Click "Add Section" for new document boundaries  
+4. **Delete Sections**: Use remove buttons to delete unnecessary sections
+5. **Validation**: Real-time validation prevents overlapping pages and invalid configurations
+6. **Submit Changes**: Click "Save & Process Changes" to trigger selective reprocessing
+
+### Processing Optimization
+
+The Edit Sections feature uses **2-phase schema knowledge optimization**:
+
+#### Phase 1: Frontend 
+- **Selective Payload**: Only sends sections that actually changed
+- **Validation Engine**: Prevents invalid configurations before submission
+
+#### Phase 2: Backend   
+- **Pipeline**: Processing functions automatically skip redundant operations
+  - **OCR**: Skips if pages already have OCR data
+  - **Classification**: Skips if pages already classified
+  - **Extraction**: Skips if sections have extraction data
+  - **Assessment**: Skips if extraction results contain assessment data
+- **Selective Reprocessing**: Only modified sections lose their data and get reprocessed
+
+### Pattern Compatibility
+
+#### Pattern-2 and Pattern-3 Support
+- **Full Functionality**: Complete edit capabilities with intelligent reprocessing
+- **Performance Optimization**: Automatic selective processing for efficiency  
+- **Data Preservation**: Unmodified sections retain all processing results
+
+#### Pattern-1 Information
+Pattern-1 uses **Bedrock Data Automation (BDA)** with automatic section management. When Edit Sections is clicked, users see an informative modal explaining:
+
+- **Architecture Differences**: BDA handles section boundaries automatically
+- **Alternative Workflows**: Available options like "View/Edit Data", Configuration updates, and document reprocessing
+- **Future Considerations**: Guidance on using Pattern-2/Pattern-3 for fine-grained section control
+
+
 ## Document Analytics
 
 The Document Analytics feature allows users to query their processed documents using natural language and receive results in various formats including charts, tables, and text responses.
@@ -103,6 +163,11 @@ The Document Process Flow visualization is particularly useful for troubleshooti
 The "Chat with Document" feature is available at the bottom of the Document Detail view. This feature uses the same model that's configured to do the summarization to provide a RAG interface to the document that's the details are displayed for. No other document is taken in to account except the document you're viewing the details of. Note that this feature will only work after the document status is marked as complete.
 
 Your chat history will be saved as you continue your chat but if you leave the document details screen, your chat history is erased. This feature uses prompt caching for the document contents for repeated chat requests for each document.
+
+See the feature in action in this video:  
+ 
+https://github.com/user-attachments/assets/50607084-96d6-4833-85a6-3dc0e72b28ac
+
 
 ### How to Use
 
