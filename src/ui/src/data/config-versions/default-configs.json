@@ -1,0 +1,48 @@
+[
+  {
+    "id": "default_config_1",
+    "name": "Default Configuration",
+    "description": "Standard document processing configuration",
+    "isDefault": true,
+    "isActive": true,
+    "createdBy": "System",
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "updatedAt": "2024-01-01T00:00:00.000Z",
+    "config": {
+      "documentTypes": ["pdf", "docx", "txt"],
+      "extractionSettings": {
+        "enableOCR": true,
+        "confidence": 0.8,
+        "language": "en"
+      },
+      "processingOptions": {
+        "enableSentimentAnalysis": true,
+        "enableEntityExtraction": true,
+        "enableSummarization": false
+      }
+    }
+  },
+  {
+    "id": "sample_config_1",
+    "name": "High Accuracy Config",
+    "description": "Configuration optimized for high accuracy document processing",
+    "isDefault": false,
+    "isActive": false,
+    "createdBy": "Admin",
+    "createdAt": "2024-01-15T10:30:00.000Z",
+    "updatedAt": "2024-01-15T10:30:00.000Z",
+    "config": {
+      "documentTypes": ["pdf", "docx"],
+      "extractionSettings": {
+        "enableOCR": true,
+        "confidence": 0.95,
+        "language": "en"
+      },
+      "processingOptions": {
+        "enableSentimentAnalysis": true,
+        "enableEntityExtraction": true,
+        "enableSummarization": true
+      }
+    }
+  }
+]

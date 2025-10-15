@@ -17,12 +17,13 @@ import {
   Input,
   RadioGroup,
   Badge,
+  ButtonDropdown,
 } from '@awsui/components-react';
 import Editor from '@monaco-editor/react';
 // eslint-disable-next-line import/no-extraneous-dependencies
 import yaml from 'js-yaml';
 import useConfiguration from '../../hooks/use-configuration';
-import useSettingsVersions from '../../hooks/use-settings-versions';
+import { useConfigVersions } from '../../hooks/useConfigVersions';
 import FormView from './FormView';
 import VersionSelector from './VersionSelector';
 import VersionManagementPanel from './VersionManagementPanel';
@@ -41,7 +42,7 @@ const ConfigurationLayout = () => {
   } = useConfiguration();
 
   // Version management
-  const versionsHook = useSettingsVersions();
+  const versionsHook = useConfigVersions();
   const [showVersionPanel, setShowVersionPanel] = useState(false);
 
   const [formValues, setFormValues] = useState({});
@@ -58,6 +59,8 @@ const ConfigurationLayout = () => {
   const [exportFormat, setExportFormat] = useState('json');
   const [exportFileName, setExportFileName] = useState('configuration');
   const [importError, setImportError] = useState(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [versionToDelete, setVersionToDelete] = useState(null);
 
   const editorRef = useRef(null);
 
@@ -906,6 +909,19 @@ const ConfigurationLayout = () => {
     input.value = '';
   };
 
+  const handleDeleteVersion = async () => {
+    if (versionToDelete) {
+      await versionsHook.deleteVersion(versionToDelete.id);
+      setShowDeleteModal(false);
+      setVersionToDelete(null);
+    }
+  };
+
+  const handleDeleteClick = (version) => {
+    setVersionToDelete(version);
+    setShowDeleteModal(true);
+  };
+
   if (loading) {
     return (
       <Container header={<Header variant="h2">Configuration</Header>}>
@@ -1035,6 +1051,28 @@ const ConfigurationLayout = () => {
         </SpaceBetween>
       </Modal>
 
+      <Modal
+        visible={showDeleteModal}
+        onDismiss={() => setShowDeleteModal(false)}
+        header="Delete Configuration"
+        footer={
+          <Box float="right">
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button variant="link" onClick={() => setShowDeleteModal(false)}>
+                Cancel
+              </Button>
+              <Button variant="primary" onClick={handleDeleteVersion}>
+                Delete
+              </Button>
+            </SpaceBetween>
+          </Box>
+        }
+      >
+        <Box>
+          Are you sure you want to delete the configuration "{versionToDelete?.name}"? This action cannot be undone.
+        </Box>
+      </Modal>
+
       <Container
         header={
           <Header
@@ -1042,6 +1080,22 @@ const ConfigurationLayout = () => {
             description="Configure IDP system settings and manage versions"
             actions={
               <SpaceBetween direction="horizontal" size="xs">
+                <ButtonDropdown
+                  items={versionsHook.versions
+                    .filter(v => !v.isDefault)
+                    .map(version => ({
+                      id: version.id,
+                      text: version.name,
+                      description: version.description
+                    }))}
+                  onItemClick={({ detail }) => {
+                    const version = versionsHook.versions.find(v => v.id === detail.id);
+                    handleDeleteClick(version);
+                  }}
+                  disabled={versionsHook.versions.filter(v => !v.isDefault).length === 0}
+                >
+                  Delete Config
+                </ButtonDropdown>
                 <Button iconName="settings" onClick={() => setShowVersionPanel(!showVersionPanel)}>
                   {showVersionPanel ? 'Hide' : 'Manage'} Versions
                 </Button>

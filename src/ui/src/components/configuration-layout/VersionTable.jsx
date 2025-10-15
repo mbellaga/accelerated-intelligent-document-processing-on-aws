@@ -41,17 +41,20 @@ const VersionTable = ({ versions, onVersionAction }) => {
       id: 'actions',
       header: 'Actions',
       cell: (item) => (
-        <ButtonDropdown
-          items={[
-            { id: 'activate', text: 'Set as Active', disabled: item.isActive },
-            { id: 'edit', text: 'Edit' },
-            { id: 'duplicate', text: 'Duplicate' },
-            { id: 'delete', text: 'Delete', disabled: item.isDefault },
-          ]}
-          onItemClick={({ detail }) => onVersionAction(detail.id, item)}
-        >
-          Actions
-        </ButtonDropdown>
+        <Box padding={{ horizontal: 'm', vertical: 's' }} style={{ position: 'relative', zIndex: 1000 }}>
+          <ButtonDropdown
+            items={[
+              { id: 'activate', text: 'Set as Active', disabled: item.isActive },
+              { id: 'edit', text: 'Edit' },
+              { id: 'duplicate', text: 'Duplicate' },
+              { id: 'delete', text: 'Delete' },
+            ]}
+            onItemClick={({ detail }) => onVersionAction(detail.id, item)}
+            expandToViewport
+          >
+            Actions
+          </ButtonDropdown>
+        </Box>
       ),
     },
   ];
